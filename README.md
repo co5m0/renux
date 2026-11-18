@@ -78,7 +78,27 @@ and please report them as [issues](https://github.com/zenodea/renux/issues).
 
 ## Installing
 
-There are no packages yet, so Renux is built from source. You need a Rex server to connect to.
+You need a Rex server to connect to.
+
+### NixOS
+
+Add Renux to the inputs in your system flake:
+
+```nix
+inputs.renux.url = "github:co5m0/renux";
+```
+
+Add `renux` to the arguments of `outputs`. Append this module to your host's `nixosSystem.modules` list:
+
+```nix
+({ pkgs, ... }: {
+  environment.systemPackages = [ renux.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+})
+```
+
+Rebuild your system as usual. The package installs the `renux` command and a desktop entry.
+
+### Other Linux distributions
 
 1. Install Zig 0.17 and the libraries, with their development files:
 
@@ -164,6 +184,7 @@ See [port forwarding](docs/port-forwarding.md) for requirements and limitations.
 ## Building
 
 You need Zig 0.17, GTK 4, libadwaita, librsvg and poppler-glib, with their development files.
+On x86-64 or ARM64 Linux with Nix flakes enabled, run `nix develop` in the checkout to get these dependencies.
 
 ```sh
 git submodule update --init
