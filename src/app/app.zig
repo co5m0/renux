@@ -169,6 +169,7 @@ const css =
     \\.tray-chip.carried { background-color: mix(@popover_bg_color, @window_fg_color, 0.1); box-shadow: 0 0 0 1px @renux_stroke_subtle, 0 8px 22px alpha(black, 0.28); transition: background-color 150ms ease-out, box-shadow 170ms ease-out; }
     \\window.tight .content .workspace { margin: 0; }
     \\window.tight.no-headers .content.alone .workspace { margin-top: 38px; }
+    \\window.tabs-above.no-headers .content.alone .workspace { margin-top: 0; }
     \\window.tight:not(.tabs-above) .window-corner { min-height: 38px; }
     \\window.tight:not(.tabs-above) .renux-sidebar headerbar { min-height: 38px; }
     \\window.tight:not(.tabs-above) .renux-sidebar headerbar > windowhandle > box { padding-top: 0; padding-bottom: 0; }
