@@ -25,6 +25,7 @@ const icons = @import("../icons/icons.zig");
 const keys = @import("../terminal/keys.zig");
 const Palette = @import("../ui/palette.zig").Palette;
 const reorder = @import("../ui/reorder.zig");
+const sidebar_tools = @import("../ui/sidebar_tools.zig");
 
 const gpa = std.heap.c_allocator;
 
@@ -99,7 +100,7 @@ const css =
     \\.peek-picture { margin: 10px; }
     \\.peek button { padding: 5px 7px 5px 14px; border-radius: 9px; }
     \\.peek-key { font-family: monospace; font-size: 0.8em; padding: 2px 7px; border-radius: 6px; background-color: alpha(currentColor, 0.14); }
-    \\.renux-sidebar headerbar { background: none; box-shadow: none; min-height: 52px; padding: 0 6px; }
+    \\.sidebar-header { min-height: 52px; padding: 0 8px; }
     \\.renux-sidebar list { background: none; padding: 2px 0 8px 8px; }
     \\window.sidebar-end .renux-sidebar list { padding: 2px 8px 8px 0; }
     \\window.tight .renux-sidebar list { padding: 2px 8px 8px 8px; }
@@ -171,9 +172,7 @@ const css =
     \\window.tight.no-headers .content.alone .workspace { margin-top: 38px; }
     \\window.tabs-above.no-headers .content.alone .workspace { margin-top: 0; }
     \\window.tight:not(.tabs-above) .window-corner { min-height: 38px; }
-    \\window.tight:not(.tabs-above) .renux-sidebar headerbar { min-height: 38px; }
-    \\window.tight:not(.tabs-above) .renux-sidebar headerbar > windowhandle > box { padding-top: 0; padding-bottom: 0; }
-    \\window.tight:not(.tabs-above) .renux-sidebar headerbar button { margin-top: 0; margin-bottom: 0; }
+    \\window.tight:not(.tabs-above) .sidebar-header { min-height: 38px; }
     \\window.tight .pane-card { border-radius: 0; border: none; box-shadow: none; }
     \\window.tight .workspace { background-color: @renux_stroke_subtle; }
     \\window.tight .pane-card.focused .pane-title .title { color: @accent_color; }
@@ -372,17 +371,11 @@ pub const App = struct {
     filter: ?*Host = null,
     next_page: usize = 0,
     filter_button: *gtk.MenuButton = undefined,
-    /// The sidebar's buttons that give way as it gets narrow; see `fitSidebar`.
-    head_more: *gtk.Widget = undefined,
+    sidebar_menu: *gio.Menu = undefined,
     header_room: *gtk.Widget = undefined,
-    side_header: *gtk.Widget = undefined,
     side_root: *gtk.Widget = undefined,
-    head_search: *gtk.Widget = undefined,
-    foot_session: *gtk.Widget = undefined,
-    foot_host: *gtk.Widget = undefined,
-    foot_more: *gtk.Widget = undefined,
-    /// Session rows show only their menu, which then holds what their other buttons did.
-    narrow_rows: bool = false,
+    sidebar_handle: *gtk.Widget = undefined,
+    sidebar_drag_start: ?f64 = null,
     board: *@import("../ui/board.zig").Board = undefined,
     /// Every tab at once, small, over the panes while it is open.
     overview: *@import("../ui/overview.zig").Overview = undefined,
@@ -398,7 +391,6 @@ pub const App = struct {
     agents_only: bool = false,
     agents_clock: c_uint = 0,
     config_timer: c_uint = 0,
-    filter_label: *gtk.Label = undefined,
     filter_menu: *gio.Menu = undefined,
     mode_chip: *gtk.Label = undefined,
     /// The keys that can follow a prefix or work in a key mode, while one is waiting.
@@ -544,19 +536,17 @@ pub const App = struct {
         corner.as(gtk.Widget).setHalign(.start);
         corner.as(gtk.Widget).setValign(.start);
         corner_size.addWidget(corner.as(gtk.Widget));
-        const side_header = adw.HeaderBar.new();
-        side_header.setShowTitle(0);
-        side_header.setShowStartTitleButtons(0);
-        const header_room = gtk.Box.new(.horizontal, 0);
-        // As wide as the corner while the sidebar has that much room; see `fitSidebar`.
-        a.header_room = header_room.as(gtk.Widget);
-        side_header.packStart(header_room.as(gtk.Widget));
-        a.side_header = side_header.as(gtk.Widget);
-        // A cog that opens Settings; what the old menu here listed has its own button or key.
-        a.head_more = icons.button(.gear, "Settings", "app.settings").as(gtk.Widget);
-        side_header.packEnd(a.head_more);
-        a.head_search = icons.button(.search, "Commands", "app.palette").as(gtk.Widget);
-        side_header.packEnd(a.head_search);
+        const side_header = gtk.WindowHandle.new();
+        side_header.as(gtk.Widget).addCssClass("sidebar-header");
+        const head_tools = sidebar_tools.new();
+        side_header.setChild(head_tools.as(gtk.Widget));
+        a.header_room = gtk.Box.new(.horizontal, 0).as(gtk.Widget);
+        a.header_room.setHexpand(1);
+        corner_size.addWidget(a.header_room);
+        corner_size.as(gobject.Object).unref();
+        head_tools.append(a.header_room);
+        head_tools.append(icons.button(.gear, "Settings", "app.settings").as(gtk.Widget));
+        head_tools.append(icons.button(.search, "Commands", "app.palette").as(gtk.Widget));
         // The eye: with it on, the sidebar lists only agents and how each is doing. Its dot
         // says, also while it is off, that an agent needs you, failed, or has finished unseen.
         a.eye_button = gtk.ToggleButton.new();
@@ -574,19 +564,13 @@ pub const App = struct {
         a.eye_button.as(gtk.Widget).addCssClass("flat");
         a.eye_button.as(gtk.Widget).setValign(.center);
         _ = gtk.ToggleButton.signals.toggled.connect(a.eye_button, *App, &eyeToggled, a, .{});
-        side_header.packEnd(a.eye_button.as(gtk.Widget));
+        head_tools.append(a.eye_button.as(gtk.Widget));
         // The footer, like Rex's: narrow the sidebar to one host, a new session, and another host.
         const footer = gtk.Box.new(.horizontal, 2);
         footer.as(gtk.Widget).addCssClass("sidebar-footer");
         a.filter_button = gtk.MenuButton.new();
         steadyMenu(a.filter_button);
-        const pill = gtk.Box.new(.horizontal, 6);
-        pill.append(icons.image(.filter, 16));
-        a.filter_label = gtk.Label.new("Filter");
-        a.filter_label.setEllipsize(.end);
-        a.filter_label.setMaxWidthChars(16);
-        pill.append(a.filter_label.as(gtk.Widget));
-        a.filter_button.setChild(pill.as(gtk.Widget));
+        a.filter_button.setChild(icons.image(.filter, 16));
         a.filter_button.as(gtk.Widget).addCssClass("filter-pill");
         // Plain like the buttons beside it until a host is picked; then it lights up.
         a.filter_button.as(gtk.Widget).addCssClass("flat");
@@ -603,22 +587,18 @@ pub const App = struct {
         a.board_button.as(gtk.Widget).addCssClass("flat");
         a.board_button.as(gtk.Widget).setValign(.center);
         _ = gtk.ToggleButton.signals.toggled.connect(a.board_button, *App, &boardToggled, a, .{});
-        const spacer = gtk.Box.new(.horizontal, 0);
-        spacer.as(gtk.Widget).setHexpand(1);
-        footer.append(spacer.as(gtk.Widget));
-        footer.append(a.board_button.as(gtk.Widget));
+        const foot_tools = sidebar_tools.new();
+        footer.append(foot_tools.as(gtk.Widget));
+        foot_tools.append(a.board_button.as(gtk.Widget));
         a.overview_button = icons.button(.overview, "Overview of every tab", "app.overview").as(gtk.Widget);
-        footer.append(a.overview_button);
+        foot_tools.append(a.overview_button);
         a.board_button.as(gtk.Widget).setVisible(@intFromBool(settings.current.agent_board));
         a.overview_button.setVisible(@intFromBool(settings.current.overview));
-        a.foot_session = icons.button(.new_session, "New session", "app.new-session").as(gtk.Widget);
-        footer.append(a.foot_session);
-        a.foot_host = icons.button(.add_host, "Add remote host", "app.add-host").as(gtk.Widget);
-        footer.append(a.foot_host);
-        // The header's menu moves down here when the sidebar is too narrow to hold it up there.
-        a.foot_more = icons.button(.gear, "Settings", "app.settings").as(gtk.Widget);
-        a.foot_more.setVisible(0);
-        footer.append(a.foot_more);
+        foot_tools.append(icons.button(.add_host, "Add remote host", "app.add-host").as(gtk.Widget));
+        foot_tools.append(icons.button(.new_session, "New session", "app.new-session").as(gtk.Widget));
+        a.sidebar_menu = gio.Menu.new();
+        a.fillSidebarMenu();
+        footer.append(menuButton(a.sidebar_menu.as(gio.MenuModel), "Sidebar actions").as(gtk.Widget));
         const side = adw.ToolbarView.new();
         side.as(gtk.Widget).addCssClass("renux-sidebar");
         side.addTopBar(side_header.as(gtk.Widget));
@@ -675,28 +655,27 @@ pub const App = struct {
 
         const split = adw.OverlaySplitView.new();
         a.split = split;
-        // The sidebar's right edge can be dragged to make it wider or narrower.
+        // The inner edge is the hit target, but drag offsets belong to the stationary split.
         const side_overlay = gtk.Overlay.new();
         side_overlay.setChild(side.as(gtk.Widget));
         const handle = gtk.Box.new(.vertical, 0);
         handle.as(gtk.Widget).addCssClass("sidebar-handle");
-        handle.as(gtk.Widget).setHalign(.end);
+        a.sidebar_handle = handle.as(gtk.Widget);
         handle.as(gtk.Widget).setSizeRequest(8, -1);
         handle.as(gtk.Widget).setCursorFromName("col-resize");
         const handle_drag = gtk.GestureDrag.new();
+        handle_drag.as(gtk.EventController).setPropagationPhase(.capture);
         _ = gtk.GestureDrag.signals.drag_begin.connect(handle_drag, *App, &sidebarDragBegin, a, .{});
         _ = gtk.GestureDrag.signals.drag_update.connect(handle_drag, *App, &sidebarDragUpdate, a, .{});
         _ = gtk.GestureDrag.signals.drag_end.connect(handle_drag, *App, &sidebarDragEnd, a, .{});
         _ = gtk.Gesture.signals.cancel.connect(handle_drag, *App, &sidebarDragCancel, a, .{});
-        handle.as(gtk.Widget).addController(handle_drag.as(gtk.EventController));
-        // Dragging the sidebar's edge is switched off for now: it didn't feel right yet. The
-        // sidebar keeps its standard width, and everything that fits it to a width stays for
-        // when the drag comes back.
-        if (sidebar_resizable) side_overlay.addOverlay(handle.as(gtk.Widget));
+        split.as(gtk.Widget).addController(handle_drag.as(gtk.EventController));
+        side_overlay.addOverlay(handle.as(gtk.Widget));
         split.setSidebar(side_overlay.as(gtk.Widget));
         a.side_root = side_overlay.as(gtk.Widget);
         split.setContent(card.as(gtk.Widget));
-        a.setSidebarWidth(if (sidebar_resizable) settings.current.sidebar_width else sidebar_standard);
+        split.setSidebarWidthUnit(.px);
+        split.setSidebarWidthFraction(1);
         _ = gobject.Object.signals.notify.connect(split, *App, &sidebarShown, a, .{ .detail = "show-sidebar" });
 
         a.toasts = adw.ToastOverlay.new();
@@ -787,8 +766,6 @@ pub const App = struct {
         @import("warm.zig").start(win.as(gtk.Window));
         _ = gobject.Object.signals.notify.connect(win, ?*anyopaque, &fullscreenChanged, null, .{ .detail = "fullscreened" });
         a.watchConfig();
-        // The sidebar's buttons are fitted again once the window's corner has its real width.
-        _ = glib.idleAdd(&refitSidebar, a);
         // `renux --toggle` finds this process by its ID and signals it.
         if (!dev_shot) {
             @import("../main.zig").claimToggle();
@@ -831,14 +808,11 @@ pub const App = struct {
         return S.buf[0 .. n + 1 :0];
     }
 
-    var sidebar_drag_start: f64 = 0;
-
     fn setSidebarWidth(a: *App, width: f64) void {
-        const w = std.math.clamp(width, settings.sidebar_min, 480);
+        const w = @round(std.math.clamp(width, settings.sidebar_min, 480));
+        if (a.sidebar_drag_start != null and w == a.split.getMaxSidebarWidth()) return;
         a.split.setMaxSidebarWidth(w);
         a.split.setMinSidebarWidth(w);
-        a.split.setSidebarWidthFraction(1);
-        a.fitSidebar(w);
         // The split view gives a sidebar no more than its contents ask for, whatever the
         // maximum says, so the sidebar asks for exactly the width picked. Without this it sat
         // at its header's width and jumped whenever that changed.
@@ -846,49 +820,17 @@ pub const App = struct {
         a.cornerChanged();
     }
 
-    /// Shows the sidebar's buttons that fit at this width. The ones that don't are in a menu
-    /// instead: the header's search and menu give way to the window's corner buttons first, the
-    /// menu moving to the footer; then the footer's own buttons and each session's go, all of
-    /// which the menus offer too.
-    fn fitSidebar(a: *App, width: f64) void {
-        // The header holds a gap as wide as the window's corner buttons, then its own two
-        // buttons. Whatever doesn't fit at this width goes, so the header never holds the
-        // sidebar wider than asked (which made it stick and then jump while being dragged).
-        // Narrower than the corner itself, the corner reaches over the first pane, whose title
-        // moves aside for it as it does when the sidebar is hidden.
-        var min: c_int = 0;
-        var nat: c_int = 0;
-        a.corner.measure(.horizontal, -1, &min, &nat, null, null);
-        const corner_w: f64 = @floatFromInt(nat);
-        // Measured, not guessed: how wide the header is with each set of buttons and no gap.
-        a.header_room.setSizeRequest(0, -1);
-        var room: f64 = 0;
-        var shown: usize = 0;
-        for ([_]usize{ 2, 1, 0 }) |buttons| {
-            a.head_search.setVisible(@intFromBool(buttons == 2));
-            a.head_more.setVisible(@intFromBool(buttons >= 1));
-            a.side_header.measure(.horizontal, -1, &min, &nat, null, null);
-            room = width - @as(f64, @floatFromInt(min));
-            shown = buttons;
-            if (room >= corner_w) break;
-        }
-        a.foot_more.setVisible(@intFromBool(shown == 0));
-        a.header_room.setSizeRequest(@intFromFloat(std.math.clamp(room, 0, corner_w)), -1);
-        const roomy = width >= 172;
-        a.foot_session.setVisible(@intFromBool(roomy));
-        a.foot_host.setVisible(@intFromBool(roomy));
-        const narrow = width < 190;
-        if (narrow != a.narrow_rows) {
-            a.narrow_rows = narrow;
-            // Rows are built for one or the other, so they are made again.
-            a.row_marks.clearRetainingCapacity();
-            a.rebuildSidebar();
-        }
+    fn fillSidebarMenu(a: *App) void {
+        const menu = a.sidebar_menu;
+        menu.removeAll();
+        menu.append("New Session…", "app.new-session");
+        menu.append("Add Remote Host…", "app.add-host");
+        menu.append(if (a.agents_only) "Show All Sessions" else "Show Only Agents", "app.agents");
+        if (settings.current.agent_board) menu.append("Agent Board", "app.board");
+        if (settings.current.overview) menu.append("Overview", "app.overview");
+        menu.append("Commands…", "app.palette");
+        menu.append("Settings…", "app.settings");
     }
-
-    /// Whether the sidebar's edge can be dragged, and the width it has while it can't.
-    const sidebar_resizable = false;
-    const sidebar_standard: f64 = 292;
 
     /// Watches the settings file and the themes folder, so a change made outside this window
     /// takes effect at once: a script that switches color themes, another Renux window, an
@@ -973,6 +915,7 @@ pub const App = struct {
         const a: *App = @ptrCast(@alignCast(data.?));
         a.eye_swap = 0;
         a.agents_only = a.eye_button.getActive() != 0;
+        a.fillSidebarMenu();
         // "4 min" beside each agent is kept up to date while they are listed.
         if (a.agents_clock != 0) _ = glib.Source.remove(a.agents_clock);
         a.agents_clock = if (a.agents_only) glib.timeoutAddSeconds(30, &agentsTick, a) else 0;
@@ -1117,20 +1060,20 @@ pub const App = struct {
         @import("warm.zig").again();
     }
 
-    fn refitSidebar(data: ?*anyopaque) callconv(.c) c_int {
-        const a: *App = @ptrCast(@alignCast(data.?));
-        a.setSidebarWidth(a.split.getMaxSidebarWidth());
-        return 0;
-    }
-
-    fn sidebarDragBegin(_: *gtk.GestureDrag, _: f64, _: f64, a: *App) callconv(.c) void {
-        sidebar_drag_start = a.split.getMaxSidebarWidth();
+    fn sidebarDragBegin(g: *gtk.GestureDrag, x: f64, y: f64, a: *App) callconv(.c) void {
+        if (a.split.as(gtk.Widget).pick(x, y, .{}) != a.sidebar_handle) {
+            _ = g.as(gtk.Gesture).setState(.denied);
+            return;
+        }
+        _ = g.as(gtk.Gesture).setState(.claimed);
+        a.sidebar_drag_start = @floatFromInt(a.side_root.getWidth());
         termview.hold_sizes = true;
     }
 
     /// The drag is over, however it ended: panes take the sizes they now have.
     fn sidebarDragDone(a: *App) void {
-        if (!termview.hold_sizes) return;
+        if (a.sidebar_drag_start == null) return;
+        a.sidebar_drag_start = null;
         termview.hold_sizes = false;
         for (a.hosts.items) |h| h.workspace.sendSizes();
     }
@@ -1140,12 +1083,20 @@ pub const App = struct {
     }
 
     fn sidebarDragUpdate(_: *gtk.GestureDrag, dx: f64, _: f64, a: *App) callconv(.c) void {
-        a.setSidebarWidth(sidebar_drag_start + dx);
+        const start = a.sidebar_drag_start orelse return;
+        const at_start = a.split.getSidebarPosition() == .start;
+        const left = at_start != (a.split.as(gtk.Widget).getDirection() == .rtl);
+        a.setSidebarWidth(start + if (left) dx else -dx);
     }
 
-    fn sidebarDragEnd(_: *gtk.GestureDrag, _: f64, _: f64, a: *App) callconv(.c) void {
-        settings.current.sidebar_width = a.split.getMaxSidebarWidth();
-        settings.save();
+    fn sidebarDragEnd(g: *gtk.GestureDrag, dx: f64, dy: f64, a: *App) callconv(.c) void {
+        if (a.sidebar_drag_start == null) return;
+        sidebarDragUpdate(g, dx, dy, a);
+        const w = a.split.getMaxSidebarWidth();
+        if (settings.current.sidebar_width != w) {
+            settings.current.sidebar_width = w;
+            settings.save();
+        }
         a.sidebarDragDone();
     }
 
@@ -1889,12 +1840,14 @@ pub const App = struct {
     pub fn tabsChanged(a: *App) void {
         const pos = settings.current.tab_position;
         a.split.setSidebarPosition(if (pos == .right) .end else .start);
+        a.sidebar_handle.setHalign(if (pos == .right) .start else .end);
+        a.header_room.setVisible(@intFromBool(pos != .right));
         const w = a.window.as(gtk.Widget);
         if (pos == .right) w.addCssClass("sidebar-end") else w.removeCssClass("sidebar-end");
         if (pos == .above) w.addCssClass("tabs-above") else w.removeCssClass("tabs-above");
         a.rebuildSidebar();
         a.rebuildTabs();
-        a.cornerChanged();
+        a.setSidebarWidth(settings.current.sidebar_width);
     }
 
     /// The rows the sidebar should have now, in order: each host's name when several are shown,
@@ -2109,19 +2062,20 @@ pub const App = struct {
                 label.as(gtk.Widget).setHexpand(1);
                 label.as(gtk.Widget).addCssClass("session-heading");
                 const head = gtk.Box.new(.horizontal, 0);
-                head.append(label.as(gtk.Widget));
+                const tools = sidebar_tools.new();
+                head.append(tools.as(gtk.Widget));
+                tools.append(label.as(gtk.Widget));
                 // On hover, like Rex: a new window in this session, and folding its windows away.
                 const add = icons.button(.plus, "New window here", "app.new-window-in");
                 add.as(gtk.Actionable).setActionTargetValue(glib.Variant.newString(sid_z.ptr));
                 add.as(gtk.Widget).addCssClass("session-tool");
-                if (a.narrow_rows) add.as(gtk.Widget).setVisible(0);
-                head.append(add.as(gtk.Widget));
+                tools.append(add.as(gtk.Widget));
                 const fold = icons.button(if (want.collapsed) .right else .down, if (want.collapsed) "Show windows" else "Hide windows", "app.toggle-session");
                 fold.as(gtk.Actionable).setActionTargetValue(glib.Variant.newString(sid_z.ptr));
                 fold.as(gtk.Widget).addCssClass("session-tool");
                 if (want.collapsed) fold.as(gtk.Widget).addCssClass("folded");
-                if (above or a.narrow_rows) fold.as(gtk.Widget).setVisible(0);
-                head.append(fold.as(gtk.Widget));
+                fold.as(gtk.Widget).setVisible(@intFromBool(!above));
+                tools.append(fold.as(gtk.Widget));
                 const session_more = menuButton(sessionMenu(session.id), "Session");
                 session_more.as(gtk.Widget).addCssClass("session-tool");
                 head.append(session_more.as(gtk.Widget));
@@ -2221,7 +2175,6 @@ pub const App = struct {
         }
         // Always just the icon: lit while the sidebar is narrowed to a host, whose name the
         // tooltip gives, and plain otherwise.
-        a.filter_label.as(gtk.Widget).setVisible(0);
         if (a.filter) |f| {
             var tip: [160]u8 = undefined;
             if (std.fmt.bufPrintSentinel(&tip, "Showing only {s}", .{f.label}, 0)) |z| a.filter_button.as(gtk.Widget).setTooltipText(z.ptr) else |_| {}
@@ -4252,7 +4205,6 @@ pub const App = struct {
     /// makes room for the corner follows.
     pub fn windowButtonsChanged(a: *App) void {
         a.corner_controls.setVisible(@intFromBool(settings.current.window_buttons));
-        a.setSidebarWidth(a.split.getMaxSidebarWidth());
         a.cornerChanged();
     }
 
@@ -4368,6 +4320,7 @@ pub const App = struct {
     }
 
     pub fn viewsChanged(a: *App) void {
+        a.fillSidebarMenu();
         const st = &settings.current;
         a.board_button.as(gtk.Widget).setVisible(@intFromBool(st.agent_board));
         a.overview_button.setVisible(@intFromBool(st.overview));
@@ -5116,7 +5069,7 @@ fn runScript(_: ?*anyopaque) callconv(.c) c_int {
             defer file.unref();
             _ = tv.upload(&.{file}, false);
         } else if (std.mem.eql(u8, cmd, "sidebar")) {
-            if (a.split.getSidebar()) |sb| std.log.info("sidebar was {d} wide (asked {d:.0}, min {d:.0}, max {d:.0}, room {d}, header {d})", .{ sb.getWidth(), a.split.getMaxSidebarWidth(), a.split.getMinSidebarWidth(), a.split.getMaxSidebarWidth(), a.header_room.getWidth(), a.side_header.getWidth() });
+            if (a.split.getSidebar()) |sb| std.log.info("sidebar was {d} wide (asked {d:.0})", .{ sb.getWidth(), a.split.getMaxSidebarWidth() });
             a.setSidebarWidth(std.fmt.parseFloat(f64, it.next() orelse "250") catch 250);
         } else if (std.mem.eql(u8, cmd, "hovercard")) {
             @import("../ui/hovercard.zig").showLast();

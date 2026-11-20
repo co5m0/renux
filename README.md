@@ -22,8 +22,9 @@ and please report them as [issues](https://github.com/zenodea/renux/issues).
 - **Every tab at once.** The overview zooms out from the tab you are on to a grid of all your
   tabs, each drawn as its live terminals. A dot on a tab shows what each agent in it is doing.
   Pick a tab and it zooms back in.
-- **Only the terminals.** Full screen mode hides the sidebar, the title rows and the window's
-  own background, so the panes fill the window.
+- **Room for your panes.** Drag the sidebar's inner edge to resize it. Renux remembers the
+  width. Shortcuts fade as space runs out; the **⋯** menu at the bottom keeps their actions
+  within reach. Full screen mode hides the sidebar, title rows and window background entirely.
 - **Your agents at a glance.** Panes running coding agents show what they are doing, and the
   agent board sorts them into Idle, Running, Attention and Done. In Settings > Server > Agents,
   **Keep this computer awake while an agent is working** asks your desktop to prevent suspend

@@ -50,7 +50,7 @@ pub const Settings = struct {
     /// Blurs what shows through. On Linux the desktop decides; KDE and Hyprland do it.
     blur: bool = true,
     /// The sidebar's width in pixels, set by dragging its edge.
-    sidebar_width: f64 = 250,
+    sidebar_width: f64 = 292,
     /// How far a trackpad's movement scrolls a terminal, as a multiple of the fingers' own.
     scroll_speed: f64 = 2,
     /// After a prefix such as ctrl+a, list the keys that can follow.

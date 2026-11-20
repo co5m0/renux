@@ -124,6 +124,7 @@ test {
     _ = @import("ui/palette.zig");
     _ = @import("ui/overview.zig");
     _ = @import("ui/reorder.zig");
+    _ = @import("ui/sidebar_tools.zig");
     _ = @import("settings/settings.zig");
     _ = @import("theme/themes.zig");
     _ = @import("settings/settings_window.zig");
